@@ -209,5 +209,7 @@ __marimo__/
 # LOINC Chunker output files
 loinc_chunks.db
 loinc_chunks.csv
+example_loinc_chunks.db
+example_loinc_chunks.csv
 *.csv
 *.db
