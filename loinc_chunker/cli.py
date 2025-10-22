@@ -2,10 +2,11 @@
 
 import click
 import sys
+import os
 from pathlib import Path
 from typing import List
 
-from .scraper import LoincScraper
+from .api_client import LoincAPIClient
 from .chunker import ContentChunker
 from .storage import StorageManager
 
@@ -13,10 +14,10 @@ from .storage import StorageManager
 @click.group()
 @click.version_option(version='0.1.0')
 def main():
-    """LOINC Web Semantic Chunker - Download and chunk LOINC web content.
+    """LOINC Web Semantic Chunker - Download and chunk LOINC content.
 
-    This tool downloads content from loinc.org, chunks it based on
-    structural elements, and stores it in both SQLite database and CSV format.
+    This tool downloads content from LOINC APIs, chunks it based on
+    structured fields, and stores it in both SQLite database and CSV format.
     """
     pass
 
@@ -25,24 +26,48 @@ def main():
 @click.argument('loinc_codes', nargs=-1, required=True)
 @click.option('--db', default='loinc_content.db', help='SQLite database file path')
 @click.option('--csv', default='loinc_content.csv', help='CSV output file path')
+@click.option('--api', default='nlm', type=click.Choice(['fhir', 'search', 'nlm']),
+              help='API type to use (default: nlm)')
+@click.option('--username', '-u', help='LOINC username (for FHIR/Search APIs)')
+@click.option('--password', '-p', help='LOINC password (for FHIR/Search APIs)')
 @click.option('--timeout', default=30, type=int, help='Request timeout in seconds')
 @click.option('--skip-csv', is_flag=True, help='Skip CSV export')
 @click.option('--skip-db', is_flag=True, help='Skip database storage')
 @click.option('--force', is_flag=True, help='Re-download even if code exists in database')
-def download(loinc_codes: tuple, db: str, csv: str, timeout: int, skip_csv: bool, skip_db: bool, force: bool):
+def download(loinc_codes: tuple, db: str, csv: str, api: str, username: str, password: str,
+             timeout: int, skip_csv: bool, skip_db: bool, force: bool):
     """Download and chunk LOINC content for one or more codes.
 
     Examples:
         loinc-chunker download 2160-0
         loinc-chunker download 2160-0 2339-0 2345-7
+        loinc-chunker download 2160-0 --api fhir -u user -p pass
         loinc-chunker download 2160-0 --db custom.db --csv custom.csv
+
+    API Types:
+        nlm: NLM Clinical Tables (no auth required, default)
+        fhir: LOINC FHIR API (requires LOINC credentials)
+        search: LOINC Search API (requires LOINC credentials)
+
+    Authentication:
+        Use --username and --password, or set environment variables:
+        LOINC_USERNAME and LOINC_PASSWORD
     """
     if skip_csv and skip_db:
         click.echo("Error: Cannot skip both CSV and database storage", err=True)
         sys.exit(1)
 
+    # Check for credentials if using FHIR or Search API
+    if api in ['fhir', 'search']:
+        has_creds = (username and password) or \
+                   (os.environ.get('LOINC_USERNAME') and os.environ.get('LOINC_PASSWORD'))
+        if not has_creds:
+            click.echo(f"Warning: {api.upper()} API typically requires authentication.", err=True)
+            click.echo("Set LOINC_USERNAME and LOINC_PASSWORD environment variables,", err=True)
+            click.echo("or use --username and --password options.", err=True)
+
     # Initialize components
-    scraper = LoincScraper(timeout=timeout)
+    client = LoincAPIClient(api_type=api, username=username, password=password, timeout=timeout)
     chunker = ContentChunker()
     storage = StorageManager(db_path=db, csv_path=csv)
 
@@ -66,20 +91,22 @@ def download(loinc_codes: tuple, db: str, csv: str, timeout: int, skip_csv: bool
     successful = 0
     failed = []
 
+    click.echo(f"Using {api.upper()} API")
+
     with click.progressbar(codes_to_download, label='Downloading LOINC codes') as bar:
         for loinc_code in bar:
-            # Download content
-            soup = scraper.download_loinc_page(loinc_code)
+            # Get API data
+            api_data = client.get_loinc_data(loinc_code)
 
-            if not soup:
+            if not api_data:
                 failed.append(loinc_code)
                 continue
 
             # Get URL
-            url = scraper.get_url_for_code(loinc_code)
+            url = client.get_url_for_code(loinc_code)
 
             # Chunk content
-            chunks = chunker.chunk_content(soup, loinc_code, url)
+            chunks = chunker.chunk_api_data(api_data, loinc_code, url, api_type=api)
 
             if not chunks:
                 click.echo(f"\nWarning: No content chunks extracted for {loinc_code}", err=True)
@@ -102,7 +129,7 @@ def download(loinc_codes: tuple, db: str, csv: str, timeout: int, skip_csv: bool
                 failed.append(loinc_code)
 
     # Cleanup
-    scraper.close()
+    client.close()
 
     # Summary
     click.echo(f"\n{'='*50}")
@@ -192,12 +219,17 @@ def delete(loinc_code: str, db: str):
 @click.argument('input_file', type=click.File('r'))
 @click.option('--db', default='loinc_content.db', help='SQLite database file path')
 @click.option('--csv', default='loinc_content.csv', help='CSV output file path')
+@click.option('--api', default='nlm', type=click.Choice(['fhir', 'search', 'nlm']),
+              help='API type to use (default: nlm)')
+@click.option('--username', '-u', help='LOINC username (for FHIR/Search APIs)')
+@click.option('--password', '-p', help='LOINC password (for FHIR/Search APIs)')
 @click.option('--timeout', default=30, type=int, help='Request timeout in seconds')
-def batch(input_file, db: str, csv: str, timeout: int):
+def batch(input_file, db: str, csv: str, api: str, username: str, password: str, timeout: int):
     """Download LOINC codes from a file (one code per line).
 
     Example:
         loinc-chunker batch codes.txt
+        loinc-chunker batch codes.txt --api fhir -u user -p pass
     """
     # Read codes from file
     codes = [line.strip() for line in input_file if line.strip()]
@@ -210,7 +242,8 @@ def batch(input_file, db: str, csv: str, timeout: int):
 
     # Use the download command logic
     ctx = click.get_current_context()
-    ctx.invoke(download, loinc_codes=tuple(codes), db=db, csv=csv, timeout=timeout,
+    ctx.invoke(download, loinc_codes=tuple(codes), db=db, csv=csv, api=api,
+               username=username, password=password, timeout=timeout,
                skip_csv=False, skip_db=False, force=False)
 
 

@@ -1,16 +1,257 @@
-"""Content chunking module for LOINC web pages."""
+"""Content chunking module for LOINC web pages and API responses."""
 
-from typing import List, Dict
+from typing import List, Dict, Any, Optional
 from bs4 import BeautifulSoup, Tag, NavigableString
+import json
 
 
 class ContentChunker:
-    """Chunks LOINC web content based on structural elements."""
+    """Chunks LOINC web content from HTML or API responses."""
 
     def __init__(self):
         """Initialize the content chunker."""
         # Structural elements that define content sections
         self.section_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'section', 'article']
+
+    def chunk_api_data(self, api_data: Dict[str, Any], loinc_code: str, url: str,
+                       api_type: str = "fhir") -> List[Dict[str, str]]:
+        """Chunk content from LOINC API response.
+
+        Args:
+            api_data: API response data
+            loinc_code: The LOINC code
+            url: The source URL
+            api_type: Type of API ('fhir', 'search', or 'nlm')
+
+        Returns:
+            List of dictionaries with chunked content
+        """
+        if api_type == "fhir":
+            return self._chunk_fhir_data(api_data, loinc_code, url)
+        elif api_type == "search":
+            return self._chunk_search_data(api_data, loinc_code, url)
+        elif api_type == "nlm":
+            return self._chunk_nlm_data(api_data, loinc_code, url)
+        else:
+            # Generic JSON chunking
+            return self._chunk_generic_json(api_data, loinc_code, url)
+
+    def _chunk_fhir_data(self, data: Dict[str, Any], loinc_code: str, url: str) -> List[Dict[str, str]]:
+        """Chunk FHIR API response data.
+
+        Args:
+            data: FHIR response
+            loinc_code: The LOINC code
+            url: The source URL
+
+        Returns:
+            List of content chunks
+        """
+        chunks = []
+
+        # Extract basic information
+        if 'parameter' in data:
+            for param in data['parameter']:
+                param_name = param.get('name', 'Unknown')
+
+                # Handle different value types
+                if 'valueString' in param:
+                    chunks.append({
+                        'loinc_code': loinc_code,
+                        'url': url,
+                        'content_section': param_name,
+                        'content': param['valueString']
+                    })
+                elif 'valueCoding' in param:
+                    coding = param['valueCoding']
+                    content_parts = []
+                    if 'display' in coding:
+                        content_parts.append(f"Display: {coding['display']}")
+                    if 'code' in coding:
+                        content_parts.append(f"Code: {coding['code']}")
+                    if 'system' in coding:
+                        content_parts.append(f"System: {coding['system']}")
+
+                    chunks.append({
+                        'loinc_code': loinc_code,
+                        'url': url,
+                        'content_section': param_name,
+                        'content': ' | '.join(content_parts)
+                    })
+                elif 'part' in param:
+                    # Handle nested parameters
+                    parts_content = []
+                    for part in param['part']:
+                        part_name = part.get('name', 'Unknown')
+                        if 'valueString' in part:
+                            parts_content.append(f"{part_name}: {part['valueString']}")
+                        elif 'valueCoding' in part:
+                            parts_content.append(f"{part_name}: {part['valueCoding'].get('display', '')}")
+
+                    if parts_content:
+                        chunks.append({
+                            'loinc_code': loinc_code,
+                            'url': url,
+                            'content_section': param_name,
+                            'content': ' | '.join(parts_content)
+                        })
+
+        # If no chunks were created, store the full response
+        if not chunks:
+            chunks.append({
+                'loinc_code': loinc_code,
+                'url': url,
+                'content_section': 'FHIR Response',
+                'content': json.dumps(data, indent=2)
+            })
+
+        return chunks
+
+    def _chunk_search_data(self, data: Dict[str, Any], loinc_code: str, url: str) -> List[Dict[str, str]]:
+        """Chunk Search API response data.
+
+        Args:
+            data: Search API response
+            loinc_code: The LOINC code
+            url: The source URL
+
+        Returns:
+            List of content chunks
+        """
+        chunks = []
+
+        # Define standard LOINC fields to extract
+        field_groups = {
+            'Basic Information': ['COMPONENT', 'PROPERTY', 'TIME_ASPCT', 'SYSTEM', 'SCALE_TYP', 'METHOD_TYP'],
+            'Names': ['LONG_COMMON_NAME', 'SHORTNAME', 'DisplayName'],
+            'Classification': ['CLASS', 'CLASSTYPE'],
+            'Status': ['STATUS', 'VersionLastChanged', 'VersionFirstReleased'],
+            'Additional Details': ['FORMULA', 'EXAMPLE_UCUM_UNITS', 'EXAMPLE_UNITS', 'ORDER_OBS', 'HL7_FIELD_SUBFIELD_ID']
+        }
+
+        for section_name, fields in field_groups.items():
+            content_parts = []
+            for field in fields:
+                if field in data:
+                    value = data[field]
+                    if value:
+                        content_parts.append(f"{field}: {value}")
+
+            if content_parts:
+                chunks.append({
+                    'loinc_code': loinc_code,
+                    'url': url,
+                    'content_section': section_name,
+                    'content': ' | '.join(content_parts)
+                })
+
+        # If no chunks were created, store important fields
+        if not chunks:
+            chunks.append({
+                'loinc_code': loinc_code,
+                'url': url,
+                'content_section': 'Search API Response',
+                'content': json.dumps(data, indent=2)
+            })
+
+        return chunks
+
+    def _chunk_nlm_data(self, data: Dict[str, Any], loinc_code: str, url: str) -> List[Dict[str, str]]:
+        """Chunk NLM API response data.
+
+        Args:
+            data: NLM API response
+            loinc_code: The LOINC code
+            url: The source URL
+
+        Returns:
+            List of content chunks
+        """
+        chunks = []
+
+        if 'data' in data and data['data']:
+            result = data['data']
+            fields = data.get('fields', [])
+
+            # Create chunks based on field groups
+            if isinstance(result, list) and fields:
+                # Map indices to field names
+                field_map = {i: field for i, field in enumerate(fields)}
+
+                # Group related fields
+                basic_info = []
+                technical_info = []
+
+                for i, value in enumerate(result):
+                    if value and i in field_map:
+                        field_name = field_map[i]
+                        entry = f"{field_name}: {value}"
+
+                        if field_name in ['COMPONENT', 'SYSTEM', 'PROPERTY', 'LONG_COMMON_NAME', 'SHORTNAME']:
+                            basic_info.append(entry)
+                        else:
+                            technical_info.append(entry)
+
+                if basic_info:
+                    chunks.append({
+                        'loinc_code': loinc_code,
+                        'url': url,
+                        'content_section': 'Basic Information',
+                        'content': ' | '.join(basic_info)
+                    })
+
+                if technical_info:
+                    chunks.append({
+                        'loinc_code': loinc_code,
+                        'url': url,
+                        'content_section': 'Technical Details',
+                        'content': ' | '.join(technical_info)
+                    })
+
+        # If no chunks were created, store the full response
+        if not chunks:
+            chunks.append({
+                'loinc_code': loinc_code,
+                'url': url,
+                'content_section': 'NLM API Response',
+                'content': json.dumps(data, indent=2)
+            })
+
+        return chunks
+
+    def _chunk_generic_json(self, data: Dict[str, Any], loinc_code: str, url: str) -> List[Dict[str, str]]:
+        """Chunk generic JSON data.
+
+        Args:
+            data: JSON data
+            loinc_code: The LOINC code
+            url: The source URL
+
+        Returns:
+            List of content chunks
+        """
+        chunks = []
+
+        # Flatten the JSON into sections
+        for key, value in data.items():
+            if isinstance(value, (dict, list)):
+                content = json.dumps(value, indent=2)
+            else:
+                content = str(value)
+
+            chunks.append({
+                'loinc_code': loinc_code,
+                'url': url,
+                'content_section': key,
+                'content': content
+            })
+
+        return chunks if chunks else [{
+            'loinc_code': loinc_code,
+            'url': url,
+            'content_section': 'Full Response',
+            'content': json.dumps(data, indent=2)
+        }]
 
     def chunk_content(self, soup: BeautifulSoup, loinc_code: str, url: str) -> List[Dict[str, str]]:
         """Chunk the content based on structural elements.

@@ -1,15 +1,18 @@
 # LOINC Web Semantic Chunker
 
-A CLI tool that downloads web content from LOINC.org, chunks it using structural elements, and stores the data in both SQLite database and CSV format.
+A CLI tool that downloads LOINC content via official APIs, chunks it based on structured fields, and stores the data in both SQLite database and CSV format.
 
 ## Features
 
-- Download content from LOINC.org for any LOINC code
-- Intelligent chunking based on structural HTML elements (headings, sections, tables)
-- Dual storage: SQLite database and CSV export
-- Batch processing from file
-- Query and manage stored content
-- Progress tracking and error handling
+- **Multiple API Support**: Access LOINC data through three different APIs
+  - NLM Clinical Tables API (no authentication required)
+  - LOINC FHIR API (requires LOINC credentials)
+  - LOINC Search API (requires LOINC credentials)
+- **Intelligent Chunking**: Organized content extraction based on structured field groups
+- **Dual Storage**: SQLite database and CSV export
+- **Batch Processing**: Process multiple codes from file
+- **Query Management**: Search and manage stored content
+- **Progress Tracking**: Visual progress bars and detailed error reporting
 
 ## Installation
 
@@ -30,7 +33,26 @@ pip install -e .
 ### Requirements
 
 - Python 3.8 or higher
-- Dependencies listed in `requirements.txt`
+- Dependencies: requests, beautifulsoup4, click, lxml
+
+## API Options
+
+### NLM Clinical Tables API (Default)
+- **Authentication**: None required
+- **Best for**: Quick access without credentials
+- **Usage**: `--api nlm` (default)
+
+### LOINC FHIR API
+- **Authentication**: LOINC username/password required
+- **Best for**: HL7 FHIR-compliant access
+- **Usage**: `--api fhir -u <username> -p <password>`
+- **URL**: https://fhir.loinc.org
+
+### LOINC Search API
+- **Authentication**: LOINC username/password required
+- **Best for**: Comprehensive LOINC database fields
+- **Usage**: `--api search -u <username> -p <password>`
+- **URL**: https://loinc.regenstrief.org/searchapi
 
 ## Usage
 
@@ -41,11 +63,17 @@ Once installed, the `loinc-chunker` command will be available.
 Download content for one or more LOINC codes:
 
 ```bash
-# Single code
+# Single code using NLM API (default, no auth required)
 loinc-chunker download 2160-0
 
 # Multiple codes
 loinc-chunker download 2160-0 2339-0 2345-7
+
+# Using FHIR API with credentials
+loinc-chunker download 2160-0 --api fhir -u myuser -p mypass
+
+# Using Search API
+loinc-chunker download 2160-0 --api search -u myuser -p mypass
 
 # Custom database and CSV paths
 loinc-chunker download 2160-0 --db custom.db --csv custom.csv
@@ -60,12 +88,28 @@ loinc-chunker download 2160-0 --skip-csv
 loinc-chunker download 2160-0 --skip-db
 ```
 
+### Authentication with Environment Variables
+
+Instead of passing credentials on command line, set environment variables:
+
+```bash
+export LOINC_USERNAME="your_username"
+export LOINC_PASSWORD="your_password"
+
+# Now you can use FHIR or Search API without -u and -p
+loinc-chunker download 2160-0 --api fhir
+```
+
 ### Batch Processing
 
 Download multiple codes from a text file (one code per line):
 
 ```bash
+# Using default NLM API
 loinc-chunker batch codes.txt
+
+# Using FHIR API with credentials
+loinc-chunker batch codes.txt --api fhir -u myuser -p mypass
 ```
 
 Example `codes.txt`:
@@ -73,6 +117,8 @@ Example `codes.txt`:
 2160-0
 2339-0
 2345-7
+718-7
+2093-3
 ```
 
 ### Query Stored Content
@@ -119,18 +165,19 @@ The CSV file contains the same fields (except `id` and `created_at`):
 
 ```csv
 loinc_code,url,content_section,content,date
-2160-0,https://loinc.org/2160-0,Main Content,"...",2025-10-22 12:34:56
+2160-0,https://loinc.org/2160-0,Basic Information,"COMPONENT: Creatinine | PROPERTY: Mass concentration...",2025-10-22 12:34:56
 ```
 
 ## How It Works
 
-1. **Web Scraping**: Downloads HTML content from `https://loinc.org/<loinc_code>`
-2. **Content Chunking**:
-   - Identifies structural elements (h1-h6, sections, articles)
-   - Chunks content based on these elements
-   - Extracts text from paragraphs, lists, tables, and divs
-   - Cleans and normalizes text
-3. **Storage**:
+1. **API Access**: Connects to selected LOINC API (NLM, FHIR, or Search)
+2. **Data Retrieval**: Fetches structured LOINC data for each code
+3. **Content Chunking**:
+   - **FHIR API**: Organizes by FHIR parameters (name, display, coding, etc.)
+   - **Search API**: Groups by field categories (Basic Info, Names, Classification, Status)
+   - **NLM API**: Separates into Basic Information and Technical Details
+   - Each chunk represents a logical grouping of related LOINC fields
+4. **Storage**:
    - Saves chunks to SQLite database with timestamps
    - Exports to CSV format
    - Prevents duplicate downloads (unless `--force` is used)
@@ -150,6 +197,9 @@ Download and chunk LOINC content
 Options:
 - `--db PATH`: SQLite database file (default: loinc_content.db)
 - `--csv PATH`: CSV output file (default: loinc_content.csv)
+- `--api TYPE`: API type: fhir, search, or nlm (default: nlm)
+- `--username, -u`: LOINC username (for FHIR/Search APIs)
+- `--password, -p`: LOINC password (for FHIR/Search APIs)
 - `--timeout SECONDS`: Request timeout (default: 30)
 - `--skip-csv`: Skip CSV export
 - `--skip-db`: Skip database storage
@@ -179,6 +229,9 @@ Download codes from a file
 Options:
 - `--db PATH`: SQLite database file (default: loinc_content.db)
 - `--csv PATH`: CSV output file (default: loinc_content.csv)
+- `--api TYPE`: API type: fhir, search, or nlm (default: nlm)
+- `--username, -u`: LOINC username (for FHIR/Search APIs)
+- `--password, -p`: LOINC password (for FHIR/Search APIs)
 - `--timeout SECONDS`: Request timeout (default: 30)
 
 ## Examples
@@ -206,6 +259,10 @@ loinc-chunker delete 2160-0
 ### Advanced Usage
 
 ```bash
+# Use different APIs for comparison
+loinc-chunker download 2160-0 --api nlm --db nlm.db
+loinc-chunker download 2160-0 --api fhir -u user -p pass --db fhir.db
+
 # Use custom database location
 loinc-chunker download 2160-0 --db ./data/loinc.db --csv ./data/loinc.csv
 
@@ -217,6 +274,11 @@ loinc-chunker download 2160-0 --force
 
 # Longer timeout for slow connections
 loinc-chunker download 2160-0 --timeout 60
+
+# Use environment variables for authentication
+export LOINC_USERNAME="myuser"
+export LOINC_PASSWORD="mypass"
+loinc-chunker download 2160-0 --api search
 ```
 
 ## Troubleshooting
@@ -235,7 +297,17 @@ If you get a "database is locked" error, make sure no other process is accessing
 
 ### No Content Extracted
 
-If no content is extracted, the LOINC code might not exist or the page structure might have changed. Check the URL manually: `https://loinc.org/<your-code>`
+If no content is extracted:
+1. Verify the LOINC code exists by checking https://loinc.org/<your-code>
+2. Try a different API: `--api nlm`, `--api fhir`, or `--api search`
+3. Check if authentication is required for your chosen API
+
+### Authentication Errors
+
+If you get 401/403 errors with FHIR or Search API:
+1. Verify your LOINC credentials are correct
+2. Check if your LOINC account has API access enabled
+3. Try the NLM API which doesn't require authentication: `--api nlm`
 
 ## Development
 
@@ -245,23 +317,29 @@ If no content is extracted, the LOINC code might not exist or the page structure
 loinc-web-semantic-chunker/
 ├── loinc_chunker/
 │   ├── __init__.py       # Package initialization
-│   ├── cli.py            # CLI interface
-│   ├── scraper.py        # Web scraping functionality
-│   ├── chunker.py        # Content chunking logic
-│   └── storage.py        # Database and CSV storage
+│   ├── cli.py            # CLI interface with Click
+│   ├── api_client.py     # API client for LOINC APIs
+│   ├── chunker.py        # Content chunking for API responses
+│   ├── storage.py        # SQLite and CSV storage
+│   └── scraper.py        # (Legacy) Web scraping functionality
 ├── requirements.txt      # Python dependencies
-├── setup.py             # Package setup
+├── pyproject.toml        # Modern package configuration
+├── setup.py             # Legacy package setup
+├── example_codes.txt    # Sample LOINC codes for testing
 └── README.md            # This file
 ```
 
 ### Running Tests
 
 ```bash
-# Test with a known LOINC code
+# Test with a known LOINC code using NLM API (no auth needed)
 loinc-chunker download 2160-0
 
 # Verify the output
 loinc-chunker query 2160-0
+
+# Test batch processing
+loinc-chunker batch example_codes.txt
 ```
 
 ## License
