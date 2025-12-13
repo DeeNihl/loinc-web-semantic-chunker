@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project specific - LOINC content files
+*.db
+*.csv
+loinc_content.db
+loinc_content.csv
+test_*.db
+test_*.csv
